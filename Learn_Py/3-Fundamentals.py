@@ -24,12 +24,13 @@ type(d)
 import math # literally from math import *
 import numpy as np
 import pandas as pd
-
+import seaborn as sns # High level Plotting
+from plotnine import * # ggplot2 in Python
 
 # Functions
 # e.g. 
 numb = 8
-np.log(8, 3) # This won't work because 8 is not an "Array"
+np.log(8, 2) # This won't work because 8 is not an "Array"
 np.log2(numb) # (2 ** x = 8)
 math.log2(8)
 math.log(8, 2)
@@ -40,13 +41,15 @@ math.log(8, 2)
 # Defined with []
 # heterogenous, i.e. many different data types
 
-# [1, 6, 9, 36] + 100 # TypeError
+[1, 6, 9, 36]
+[1, 6, 9, 36] + 100 # TypeError
 [1, 6, 9, 36] + [100] # Add two lists together
 [1, 6, 9, 36] + [10, 100]
 [1, 6, 9, 36] + [100, 200, 300, 400]
 [1, 6, 9, 36] + [100, 'dogs', 300, 400]
 
 heights = [167, 188, 178, 194, 171, 169]
+
 # Table 3.1 for typical functions
 sum(heights)
 len(heights)
@@ -74,7 +77,13 @@ np.mean(dist)
 # np.histogram(dist)
 sns.stripplot(dist)
 sns.stripplot(cities, dist)
-# sns.distplot(dist) 
+sns.distplot(dist)
+
+# ggplot-style histogram
+# We need a pandas DataFrame
+# ggplot(dist, aes(x=???))
+#     + geom_histogram()
+
 
 # Defining functions
 # Basic form:
@@ -84,6 +93,7 @@ sns.stripplot(cities, dist)
 a long description
 about my work...
 """
+
 # Use them to also add "docstrings" to a function
 def addNumbs(x, y):
     """Add two numbers together"""
@@ -104,17 +114,24 @@ def confInt(x):
 confInt(heights)
 confInt([3,4,3,2,2,1,3,4,3,4,5])
 
+# def confInt(x):
+#    z = (np.mean(x) - 1.96 * np.std(x)/np.sqrt(len(x)),np.mean(x) + 1.96 * np.std(x)/np.sqrt(len(x)))
+#    return z
+# confInt([3,4,3,2,2,1,3,4,3,4,5])
+
+
 # Returning two values - output is a tuple
 # like a list, but use () instead of []
 # tuples are immutable - they can't be modified
-def mathFun(x, y):
+def mathFun(x, y = 6):
     """Add and subtract two numbers together"""
     result = (x + y, x - y)
     
     return result
-    
-myOutput = mathFun(4, 6)
+
+myOutput = mathFun(4)
 type(myOutput)
+myOutput
 
 # Exercise 3.7 Return a tuple of two values (lower and upper limit)
 def confInt(x):
@@ -230,19 +247,37 @@ def confInt(x):
 confInt(heights)
 
 # 3.7.8 lambda functions
-def raise_to_power(x, y):
-    """exponents"""
-    return x ** y
+def raise_to_power(x):
+    return x ** 2
 
-raise_to_power(2,3)
+raise_to_power(5)
 
 # anonymous, unnamed, lambda
-lambda x, y: x ** y
+lambda x: x ** 2
+
+nums = [3, 5, 6, 8, 3]
+nums**2 
+# unsupported operand type(s) for ** or pow(): 'list' and 'int'
+# nums + [2]
+# import keyword
+# keyword.kwlist
+
+# Solutions to getting **2 applied to a list
+# 1 - for loop
+# 2 - change the type to something that allows vectorization
+# 3 - map each value of the list onto a function 1-by-1 
+square_all = map(lambda num: num ** 2, nums)
+list(square_all)
+
+nums_a = np.array([3, 5, 6, 8, 3])
+nums_a
+type(nums_a)
+nums_a**2
 
 # e.g. we saw it already in the context of a DataFrame
 # the \ breaks up a long command onto the next line
-chick.groupby(['feed'])['weight']. \
-   transform(lambda x: stats.zscore(x, ddof = 1))
+# chick.groupby(['feed'])['weight']. \
+#    transform(lambda x: stats.zscore(x, ddof = 1))
 
 # or use the map()
 # heights ** 3 # lists are not iterable
@@ -425,31 +460,67 @@ d = {'int_value': 3,
 
 d
 
-# Access values using their key
+# Can only access values using their key
 d['bool_value']
+# They don't have an order
+# d[1] # Computer says no
 
 # values can be more than length one
 # i.e. they can contain a list
 organizations = {'name': ['Volkswagen', 'Daimler', 'Allianz', 'Charite'],
                  'structure': ['company', 'company', 'company', 'research']}
 organizations['name']
+# organizations[5]
 
 # Make a dictionary (key/value pair) from lists:
 heights = [167, 188, 178, 194, 171, 169]
+weights = [65, 70, 67, 79, 80, 64]
 persons = ["Mary", "John", "Kevin", "Elena", "Doug", "Galin"]
+id = (123, 532, 8672, 2342, 656, 754)
+
+heights_2 = [[167, 65], 
+             [188, 70], 
+             [178, 67], 
+             [194, 79], 
+             [171, 80], 
+             [169, 64]]
+
+# A dict can only take two inputs: key & value
+# dict(zip(persons, heights, weights))
+# But a list is more flexible
+# list(zip(persons, heights, weights))
+hw_list = list(zip(heights, weights))
+
 
 # key is persons, 
 # value is corresponding value in heights
+# heights has a list of 6 elements each is 1 int
 heights_persons = dict(zip(persons, heights))
 heights_persons
+heights_persons['Doug']
 
+persons_id = dict(zip(id, persons))
+persons_id
+persons_id[532]
+
+# heights_2 is a list of 6 elements, each is itself a list of 2 elements
+heights_persons_2 = dict(zip(persons, heights_2))
+heights_persons_2
+
+# make a dict with two zips lists
+heights_weights = dict(zip(persons, zip(heights, weights)))
+heights_weights
 
 heights_persons.values()
 heights_persons.keys()
+persons_id.keys()
 
 # in a list use index position:
-heights[3]
+heights
+heights[3] # 4th position
 heights.index(194)
+# Use key for dict
+heights_persons
 heights_persons['Mary']
 
 # NumPy Array - Data containers, pt 3
@@ -464,14 +535,16 @@ yy = np.array([3, 8, 9, 23])
 type(yy)
 
 # A list [] of lists [], [], range()
+# Make a range(0)
+range(5) # A range object
+list(range(5)) # Equates to a list of integers
+
 zz_list = [[5, 7, 8, 9, 3],
            [0, 3, 6, 8, 2],
            range(5)]
 zz_list # 1-dimension
 
-zz_array = np.array([[5, 7, 8, 9, 3],
-                     [0, 3, 6, 8, 2],
-                     range(5)])
+zz_array = np.array(zz_list)
 zz_array # 2-dimensional
 
 # What is range(5)?

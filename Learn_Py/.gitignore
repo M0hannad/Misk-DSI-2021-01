@@ -102,20 +102,20 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+Learn_Py/.env
+Learn_Py/.venv
+Learn_Py/env/
+Learn_Py/venv/
+Learn_Py/ENV/
+Learn_Py/env.bak/
+Learn_Py/venv.bak/
 
 # Spyder project settings
-.spyderproject
-.spyproject
+Learn_Py/.spyderproject
+Learn_Py/.spyproject
 
 # Rope project settings
-.ropeproject
+Learn_Py/.ropeproject
 
 # mkdocs documentation
 /site
