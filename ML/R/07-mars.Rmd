@@ -1,0 +1,205 @@
+---
+title: "Multivariate Adaptive Regression Splines"
+output: html_notebook
+---
+
+# Prerequisites
+
+Packages:
+
+```{r}
+# Helper packages
+library(tidyverse)   # for data wrangling & plotting
+
+# Modeling packages
+library(tidymodels)  # for fitting MARS models
+
+# Model interpretability packages
+library(vip)         # for variable importance
+library(pdp)         # for variable relationships
+```
+
+Data:
+
+```{r prereqs-data}
+# Stratified sampling with the rsample package
+set.seed(123)
+ames <- AmesHousing::make_ames()
+split  <- rsample::initial_split(ames, prop = 0.7, strata = "Sale_Price")
+ames_train  <- rsample::training(split)
+ames_test   <- rsample::testing(split)
+```
+
+
+# Fitting a basic model
+
+```{r}
+# Step 1: create ridge model object
+mars_mod <- mars(mode = "regression")
+
+# Step 2: create model & preprocessing recipe
+model_recipe <- recipe(
+    Sale_Price ~ Gr_Liv_Area + Year_Built, 
+    data = ames_train
+  )
+  
+# Step 3: fit model workflow
+mars_fit <- workflow() %>%
+  add_recipe(model_recipe) %>%
+  add_model(mars_mod) %>%
+  fit(data = ames_train)
+
+# Step 4: results
+mars_fit
+```
+
+```{r}
+# RMSE
+sqrt(mars_fit$fit$fit$fit$rss / nrow(ames_train))
+```
+
+```{r}
+# coefficients
+mars_fit$fit$fit$fit$coefficients
+```
+
+
+# Fitting a full model
+
+```{r}
+# Step 1: create ridge model object
+mars_mod <- mars(mode = "regression")
+
+# Step 2: create model & preprocessing recipe
+model_recipe <- recipe(
+    Sale_Price ~ ., 
+    data = ames_train
+  )
+  
+# Step 3: fit model workflow
+mars_fit <- workflow() %>%
+  add_recipe(model_recipe) %>%
+  add_model(mars_mod) %>%
+  fit(data = ames_train)
+
+# Step 4: results
+mars_fit
+```
+
+```{r}
+# RMSE
+sqrt(mars_fit$fit$fit$fit$rss / nrow(ames_train))
+```
+
+
+# Fitting a full model with interactions
+
+```{r}
+# create ridge model object
+mars_mod <- mars(mode = "regression", prod_degree = 2)
+
+# create model & preprocessing recipe
+model_recipe <- recipe(
+    Sale_Price ~ ., 
+    data = ames_train
+  )
+  
+# fit model workflow
+mars_fit <- workflow() %>%
+  add_recipe(model_recipe) %>%
+  add_model(mars_mod) %>%
+  fit(data = ames_train)
+
+# coefficients
+mars_fit$fit$fit$fit$coefficients
+```
+
+
+# Tuning
+
+```{r}
+# create ridge model object
+mars_mod <- mars(mode = "regression", num_terms = tune(), prod_degree = tune()) %>%
+ set_engine("earth")
+
+# create model & preprocessing recipe
+model_recipe <- recipe(
+    Sale_Price ~ ., 
+    data = ames_train
+  )
+  
+# create k-fold cross validation object
+folds <- vfold_cv(ames_train, v = 5)
+
+# create our model recipe
+model_recipe <- recipe(Sale_Price ~ ., data = ames_train)
+
+# create a hyper parameter tuning grid
+hyper_grid <- grid_regular(
+ num_terms(range = c(1, 100)), 
+ prod_degree(),
+ levels = 50
+ )
+
+# train our model across the hyper parameter grid
+set.seed(123)
+results <- tune_grid(mars_mod, model_recipe, resamples = folds, grid = hyper_grid)
+
+# get best results
+show_best(results, metric = "rmse")
+```
+
+```{r}
+autoplot(results)
+```
+
+
+# Feature interpretation
+
+```{r}
+# identify best model
+lowest_rmse <- results %>%
+  select_best("rmse")
+
+# extract best model and fit
+final_model <- finalize_workflow(
+  workflow() %>% add_recipe(model_recipe) %>% add_model(mars_mod), 
+  lowest_rmse) %>%
+  fit(ames_train)
+
+# plot top 20 influential variables
+final_model %>%
+  pull_workflow_fit() %>% 
+  vip(20, type = "rss")
+```
+
+```{r}
+# prediction function
+pdp_pred_fun <- function(object, newdata) {
+  mean(predict(object, newdata, type = "numeric")$.pred)
+}
+
+# use the pdp package to extract partial dependence predictions
+# and then plot
+final_model %>%
+  pdp::partial(
+   pred.var = "Gr_Liv_Area", 
+   pred.fun = pdp_pred_fun,
+   grid.resolution = 10, 
+   train = ames_train
+  ) %>%
+  ggplot(aes(Gr_Liv_Area, yhat)) +
+  geom_line() +
+  scale_y_continuous(labels = scales::dollar)
+```
+
+
+# Exercises
+
+Using the `hitters` dataset:
+
+1. Apply a MARS model with all features.
+2. How does the model performance compare to your previous models?
+3. How many of the features are influential? Which 10 features are considered most influential?
+4. Does your model include hinge functions? If so, explain their coefficient and plot their impact on the predicted response variable.
+5. Does your model include interactions? If so, pick the interaction effect that is most influential and explain the coefficient.
