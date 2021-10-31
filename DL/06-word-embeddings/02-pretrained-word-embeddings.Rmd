@@ -1,0 +1,242 @@
+---
+title: "NLP: Transfer learning with GloVe word embeddings"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+In this example, we are going to learn how to apply pre-trained word embeddings.
+This can be useful when you have a very small dataset; too small to actually
+learn the embeddings from the data itself. However, pre-trained word embeddings
+for regression and classification predictive purposes rarely perform as well as
+learning the word embeddings from the data itself. This will become obvious in
+this example.
+
+Learning objectives:
+
+- How to prepare pre-trained word embeddings
+- How to apply pre-trained word embeddings
+
+# Requirements
+
+```{r}
+library(keras)     # deep learning modeling
+library(tidyverse) # various data wrangling & visualization tasks
+library(progress)  # provides progress bar for status updates during long loops
+library(glue)      # easy print statements
+```
+
+# Preprocess IMDB data
+
+To minimize notebook clutter, I have extracted the code to preprocess the
+training data into a separate script. This script uses the same downloaded IMDB
+movie reviews that the previous module used and preprocesses it in the same
+way.
+
+```{r, warning=FALSE}
+source("prepare_imdb.R")
+```
+
+As a result, we have a few key pieces of information that we will use in
+downstream modeling (i.e. word index, features, max sequence length).
+
+```{r}
+ls()
+```
+
+# Prepare GloVe pre-trained word embeddings
+
+We are going to use the pre-trained GloVe word embeddings which can be downloaded
+[here](https://nlp.stanford.edu/projects/glove/). For this example, we downloaded
+the glove.6B.zip file that contains 400K words and their associated word
+embeddings. Here, we'll use the 100 dimension word embeddings which has already
+been saved for you in the data directory. 
+
+___See the [requirements set-up notebook](https://github.com/misk-data-science/misk-dl/blob/master/materials/01-intro/01-requirements.md) for download instructions.___
+
+```{r}
+# get path to downloaded data
+path <- here::here("materials", "data", "glove", "glove.6B.100d.txt")
+
+glove_wts <- data.table::fread(path, quote = "", data.table = FALSE) %>% 
+  as_tibble()
+
+dim(glove_wts)
+```
+
+Our imported data frame has the associated word (or grammatical symbol), and the
+100 weights associated to its representative vector.
+
+```{r}
+head(glove_wts)
+```
+
+However, pre-trained models are typically trained on entirely different data (or
+vocabulary). Consequently, they do not always capture all words present in our
+dataset. The following illustrates that...
+
+```{r}
+applicable_index <- total_word_index[total_word_index <= top_n_words]
+applicable_words <- names(applicable_index)
+
+available_wts <- glove_wts %>%
+  filter(V1 %in% applicable_words) %>% 
+  pull(V1)
+
+diff <- length(applicable_words) - length(available_wts)
+
+glue("There are {diff} words in our IMDB data that are not represented in GloVe")
+```
+
+We need to create our own embeddings matrix with all applicable words
+represented. When doing so, we want to create the matrix in order of our word
+index so the embeddings are properly aligned. To do so, we will create an empty
+matrix to fill.
+
+```{r}
+# required dimensions of our embedding matrix
+num_words_used <- length(applicable_words)
+embedding_dim <- ncol(glove_wts) - 1
+
+# create empty matrix
+embedding_matrix <- matrix(0, nrow = num_words_used, ncol = embedding_dim)
+row.names(embedding_matrix) <- applicable_words
+
+# First 10 rows & columns of our empty matrix
+embedding_matrix[1:10, 1:10]
+```
+
+To fill our embedding matrix, we loop through the GloVe weights, get the
+available embeddings, and add to our empty embedding matrix so that they align 
+with the word index order.  If the word does not exist in the pretrained word
+embeddings then we make the embedding values 0.
+
+**Note: this takes a little less than 2 minutes to process.**
+
+```{r}
+# this just allows us to track progress of our loop
+pb <- progress_bar$new(total = num_words_used)
+
+for (word in applicable_words) {
+  # track progress
+  pb$tick()
+  
+  # get embeddings for a given word
+  embeddings <- glove_wts %>%
+    filter(V1 == word) %>%
+    select(-V1) %>% 
+    as.numeric()
+  
+  # if embeddings don't exist create a vector of all zeros
+  if (all(is.na(embeddings))) {
+    embeddings <- vector("numeric", embedding_dim)
+  }
+  
+  # add embeddings to appropriate location in matrix
+  embedding_matrix[word, ] <- embeddings
+}
+```
+
+```{r}
+embedding_matrix[1:10, 1:8]
+```
+
+Now we're ready to train our model.
+
+# Create and train our model
+
+## Define a model
+
+We will be using the same model architecture as we did in the IMDB word 
+embeddings [notebook](https://misk-data-science.github.io/misk-dl/notebooks/08-word-embeddings.nb.html). The `top_n_words` and
+`max_len` objects come from the `IMDB `source("prepare_imdb.R")` code chunk.
+
+```{r}
+model <- keras_model_sequential() %>% 
+  layer_embedding(input_dim = top_n_words, 
+                  output_dim = embedding_dim, 
+                  input_length = max_len) %>% 
+  layer_flatten() %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+summary(model)
+```
+
+## Load the GloVe embeddings in the model
+
+To set the weights of our embedding layer to our pretrained embedding matrix, 
+we:
+
+1. access our first layer,
+2. set the weights by supplying our embedding matrix,
+3. freeze the weights so they are not adjusted when we train our model.
+
+```{r}
+get_layer(model, index = 1) %>% 
+  set_weights(list(embedding_matrix)) %>% 
+  freeze_weights()
+```
+
+## Train and evaluate
+
+Let's compile our model and train it.
+
+```{r, echo=TRUE, results='hide'}
+model %>% compile(
+  optimizer = optimizer_rmsprop(lr = 0.0001),
+  loss = "binary_crossentropy",
+  metrics = c("acc")
+)
+
+history <- model %>% fit(
+  features, labels,
+  epochs = 20,
+  batch_size = 32,
+  validation_split = 0.2,
+  callbacks = list(
+    callback_early_stopping(patience = 5),
+    callback_reduce_lr_on_plateau(patience = 2)
+    )
+)
+```
+
+Our best performance is less than stellar!
+
+```{r}
+best_epoch <- which(history$metrics$val_loss == min(history$metrics$val_loss))
+loss <- history$metrics$val_loss[best_epoch] %>% round(3)
+acc <- history$metrics$val_acc[best_epoch] %>% round(3)
+
+glue("The best epoch had a loss of {loss} and accuracy of {acc}")
+```
+
+# When to use pre-trained models?
+
+Recall that word embeddings are often trained for language models. This means the embeddings are designed to predict
+the optimal word within a phrase. This rarely generalizes well to using word
+embeddings for normal regression and classification modeling. 
+
+Things to consider:
+
+- When you have very little text data, you often cannot produce reliable
+  embeddings. Pre-trained embeddings can sometimes provide performance
+  improvements in these situations.
+
+- Even better, when you have very little data, find alternative data sources
+  that aligns with your (i.e. use Amazon product reviews as an alternative
+  data source to your company's product reviews). You can then train word
+  embeddings on this alternative data source and use those embeddings for your
+  own problem.
+
+- Some language models (i.e. [ULMFiT](http://nlp.fast.ai/category/classification.html))
+  can be transferred for classification purposes much like VGG16, Resnet50, etc.
+  within the CNNs context. Consequently, you can use these models, freeze and
+  unfreeze layer weights, and re-train only part of the model to be specific to
+  your task.
+
+[🏠](https://github.com/misk-data-science/misk-dl)

@@ -1,0 +1,511 @@
+---
+title: "NLP: Word embeddings"
+output:
+  html_notebook:
+    toc: yes
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+In this example, we are going to learn about an alternative method to encode 
+text data known as ___word embeddings___. This is an incomplete tutorial on 
+word embeddings but will at least give you the basic understanding on when, why,
+and how we use them.
+
+Learning objectives:
+
+- What word embeddings are.
+- The two main contexts that word embeddings are trained.
+- When we should use word embeddings.
+- How to train word embeddings for classification purposes.
+
+# Requirements
+
+```{r}
+# Initialize package
+library(keras)
+library(fs)
+library(tidyverse)
+library(glue)
+library(progress)
+
+# helper functions we'll use to explore word embeddings
+source("helper_functions.R")
+```
+
+# The "real" IMDB dataset
+
+Keras provides a built-in IMBD dataset `dataset_imdb()`, which contains the
+text of 25,000 movie reviews that have been classified as net positive or net
+negative. However, we are going to use the original IMDB movie review files which
+can be found at http://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz.
+This tends to help students better understand the entire data prep required for
+text.
+
+You can find the download instructions [here](https://github.com/misk-data-science/misk-dl/blob/master/materials/01-intro/01-requirements.md). For those
+in the workshop we have already downloaded this data for you.
+
+```{r}
+if (stringr::str_detect(here::here(), "conf-2020-user")) {
+  imdb_dir <- "/home/conf-2020-user/data/imdb"
+} else {
+  imdb_dir <- here::here("materials", "data", "imdb")
+}
+fs::dir_tree(imdb_dir, type = "directory")
+```
+
+You can see the data have already been separated into test vs training sets and 
+positive vs negative sets. The actual reviews are contained in individual .txt
+files. We can use this structure to our advantage - the below iterates over each
+review and 
+
+1. creates the path to each individual review file,
+2. creats a label based on the "neg" or "pos" folder the review is in,
+3. and saves the output as a data frame with each review on an individual row.
+
+```{r}
+training_files <- file.path(imdb_dir, "train") %>%
+  dir_ls(type = "directory") %>%
+  map(dir_ls) %>%
+  set_names(basename) %>%
+  plyr::ldply(data_frame) %>%
+  set_names(c("label", "path"))
+
+training_files
+```
+
+We can see our response observations are balanced:
+
+```{r}
+count(training_files, label)
+```
+
+We can now iterate over each row and
+
+1. save the label in a `labels` vector,
+2. import the movie review and
+3. save in a `texts` vector.
+
+```{r}
+obs <- nrow(training_files)
+labels <- vector(mode = "integer", length = obs)
+texts <- vector(mode = "character", length = obs)
+
+# this just allows us to track progress of our loop
+pb <- progress_bar$new(total = obs, width = 60)
+
+for (file in seq_len(obs)) {
+  pb$tick()
+  
+  label <- training_files[[file, "label"]]
+  path <- training_files[[file, "path"]]
+  
+  labels[file] <- ifelse(label == "neg", 0, 1)
+  texts[file] <- readChar(path, nchars = file.size(path)) 
+  
+}
+```
+
+We now have two vectors, one consisting of the labels...
+
+```{r}
+table(labels)
+```
+
+and the other holding each review.
+
+```{r}
+texts[1]
+```
+
+# Exploratory text analysis
+
+A little exploratory analysis will show us the total number of unique words
+across our corpus and the average length of each review. Its good to know the
+word count distribution of your text as later on we'll make a decision of how
+many words to keep.
+
+```{r, fig.height=3.5}
+text_df <- texts %>%
+  tibble(.name_repair = ~ "text") %>%
+  mutate(text_length = str_count(text, "\\w+"))
+
+unique_words <- text_df %>%
+  tidytext::unnest_tokens(word, text) %>%
+  pull(word) %>%
+  n_distinct()
+
+avg_review_length <- median(text_df$text_length, na.rm = TRUE)
+  
+ggplot(text_df, aes(text_length)) +
+  geom_histogram(bins = 100, fill = "grey70", color = "grey40") +
+  geom_vline(xintercept = avg_review_length, color = "red", lty = "dashed") +
+  scale_x_log10("# words") +
+  ggtitle(glue("Median review length is {avg_review_length} words"),
+          subtitle = glue("Total number of unique words is {unique_words}"))
+```
+
+
+# Word embeddings for language modeling
+
+Word embeddings are designed to encode general semantic relationships which can
+serve two principle purposes. The first is for ___language modeling___ which 
+aims to encode words for the purpose of predicting synonyms, sentence completion, 
+and word relationships. [ℹ️](https://misk-data-science.github.io/misk-dl/03-word-embeddings.html)
+
+Although we are not focusing on word embeddings for this purpose, I have written
+a couple helper functions to train word embeddings for this purpose. See the
+code behind these helper functions [here](https://github.com/misk-data-science/misk-dl/blob/master/materials/06-word-embeddings/helper_functions.R).
+
+```{r}
+# clean up text and compute word embeddings
+clean_text <- tolower(texts) %>%
+  str_replace_all(pattern = "[[:punct:] ]+", replacement = " ") %>%
+  str_trim()
+
+word_embeddings <- get_embeddings(clean_text)
+```
+
+Explore your own words!
+
+```{r}
+# find words with similar embeddings
+get_similar_words("horrible", word_embeddings)
+```
+
+
+# Word embeddings for classification
+
+The other principle purpose for word embeddings is to encode text for 
+classification reasons. In this case, we train the word embeddings to take on 
+weights that optimize the classification loss function. [ℹ️](https://misk-data-science.github.io/misk-dl/03-word-embeddings.html#13)
+
+## Prepare data
+
+Our response variable `labels` is already a tensor; however, we still need to
+preprocess our text features. To do so we:
+
+1. Specify how many words we want to include. This example uses the 10,000 words
+   with the highest usage (frequency).
+2. Create a `text_tokenizer` object which defines how we want to preprocess the
+   text (i.e. convert to lowercase, remove punctuation, token splitting 
+   characters). For the most part, the defaults are sufficient.
+3. Apply the tokenizer to our text with `fit_text_tokenizer`. This results in an
+   object with many details of our corpus (i.e. word counts, word index).
+
+```{r}
+top_n_words <- 10000
+
+tokenizer <- text_tokenizer(num_words = top_n_words) %>% 
+  fit_text_tokenizer(texts)
+
+names(tokenizer)
+```
+
+We have now tokenized our reviews. We are considering 10,000 of 88,582 total
+unique words. The most common words include:
+     
+```{r}
+head(tokenizer$word_index)
+```
+
+Next, we extract our vectorized review data as a list. Each review is encoded as
+a sequence of word indexes (integers).
+
+```{r}
+sequences <- texts_to_sequences(tokenizer, texts)
+
+# The vectorized first instance:
+sequences[[1]]
+```
+
+We can map the integer values back to the word index. The integer number
+corresponds to the position in the word count list and the name of the vector is
+the actual word.
+
+```{r}
+paste(unlist(tokenizer$index_word)[sequences[[1]]] , collapse = " ")
+```
+
+We can see how our tokenizer converted our original text to a cleaned up 
+version:
+
+```{r} 
+cat(crayon::blue("Original text:\n"))
+texts[[1]]
+
+cat(crayon::blue("\nRevised text:\n"))
+paste(unlist(tokenizer$index_word)[sequences[[1]]] , collapse = " ")
+```
+
+Next, since each review is a different length, we need to limit ourselves to a
+certain number of words so that all our features (reviews) are the same length.
+This should be viewed as a tuning parameter. 
+
+__Tip__: I typically start with values around the 50% (median) but then explore
+values that represent 25% & 75% percentile of the word distribution when tuning.
+
+Note (`?pad_sequences`):
+
+* Any reviews that are shorter than this length will be padded.
+* Any reviews that are longer than this length will be truncated.
+
+```{r}
+max_len <- 150
+features <- pad_sequences(sequences, maxlen = max_len)
+```
+
+Since this review includes less than 150 words from our word index of 10K most
+frequent words, it pads the front-end with zeros (see `?pad_sequences()` for
+alternative padding options).
+
+```{r}
+features[1,]
+```
+
+So, in essence, we have created an input that is a numeric representation of
+this:
+
+```{r}
+features[1,] %>% 
+  map_chr(~ ifelse(.x == 0, "<pad>", unlist(tokenizer$index_word[.x]))) %>%
+  cat()
+```
+
+### Your Turn!
+
+Check out different reviews and see how we have transformed the data. Remove 
+`eval=FALSE` to run.
+
+```{r, eval=FALSE}
+# use review number (i.e. 2, 10, 150)
+which_review <- ____
+  
+cat(crayon::blue("Original text:\n"))
+texts[[which_review ]]
+
+cat(crayon::blue("\nRevised text:\n"))
+paste(unlist(tokenizer$index_word)[features[which_review ,]] , collapse = " ")
+
+cat(crayon::blue("\nEncoded text:\n"))
+features[which_review,] %>% 
+  map_chr(~ ifelse(.x == 0, "<pad>", unlist(tokenizer$index_word[.x]))) %>%
+  cat()
+```
+
+
+Our data is now preprocessed! We have `r nrow(features)` observations and 
+`r ncol(features)` features. Our `features` data is a matrix where each row is
+a single observation and each column represents the words in the review in the
+order that they appear.
+
+```{r}
+dim(features)
+length(labels)
+```
+
+
+## Model training
+
+To train our model we will use the `validation_split` procedure within `fit`. 
+Remember, this takes the last XX% of our data to be used as our validation set. 
+But if you recall, our data was organized in neg and pos folders so we should 
+randomize our data to make sure our validation set doesn't end up being all 
+positive or negative reviews!
+
+```{r}
+set.seed(123)
+index <- sample(1:nrow(features))
+
+x_train <- features[index, ]
+y_train <- labels[index]
+```
+
+To create our network architecture that includes word embeddings, we need to 
+include two things:
+
+1. `layer_embedding` layer that creates the embeddings,
+2. `layer_flatten` to flatten our embeddings to a 2D tensor for our densely 
+    connected portion of our model
+    
+__Note__:
+
+* `input_dim` & `input_length` are considered pre-processing hyperparameters.
+* `output_dim` is our word embeddings hyperparameter.
+* They all have interaction effects
+
+```{r}
+model <- keras_model_sequential() %>%
+  layer_embedding(
+    input_dim = top_n_words,   # number of words we are considering
+    input_length = max_len,    # length that we have set each review to
+    output_dim = 32            # length of our word embeddings
+    ) %>%  
+  layer_flatten() %>% 
+  layer_dense(units = 1, activation = "sigmoid")
+
+summary(model)
+```
+
+The rest of our modeling procedure follows the same protocols that you've seen 
+in the other modules.
+
+```{r}
+model %>% compile(
+  optimizer = "rmsprop",
+  loss = "binary_crossentropy",
+  metrics = "accuracy"
+)
+
+history <- model %>% fit(
+  x_train, y_train,
+  epochs = 10,
+  batch_size = 32,
+  validation_split = 0.2
+)
+```
+
+```{r}
+best_epoch <- which.min(history$metrics$val_loss)
+best_loss <- history$metrics$val_loss[best_epoch] %>% round(3)
+best_acc <- history$metrics$val_accuracy[best_epoch] %>% round(3)
+
+glue("Our optimal loss is {best_loss} with an accuracy of {best_acc}")
+```
+
+
+```{r, message=FALSE}
+plot(history)
+```
+
+## YOUR TURN! (5min)
+
+Spend a few minutes adjusting this model and see how it impacts performance. You
+may want to test:
+
+- Does increasing and decreasing the word embedding dimension (`output_dim`)
+  impacts performance?
+- How does the learning rate impact performance?
+- You may have noticed that we didn't add any additional hidden layers to the
+  densely connected portion of our model.  Does adding 1 or 2 more hidden layers
+  improve performance?
+
+```{r, eval=FALSE}
+yourturn_model <- keras_model_sequential() %>%
+  layer_embedding(
+    input_dim = _____,  
+    input_length = _____,   
+    output_dim = _____           
+    ) %>%  
+  layer_flatten() %>% 
+  layer_dense(units = ____, activation = ____) %>%
+  layer_dense(units = 1, activation = "sigmoid")
+
+yourturn_model %>% compile(
+  optimizer = _____,
+  loss = "binary_crossentropy",
+  metrics = "accuracy"
+)
+
+yourturn_results <- yourturn_model %>% fit(
+  x_train, y_train,
+  epochs = 10,
+  batch_size = 32,
+  validation_split = 0.2
+)
+```
+
+# Comparing embeddings
+
+Recall that the word embeddings we found for natural language modeling created 
+results like:
+
+```{r}
+# natural language modeling embeddings
+get_similar_words("horrible", word_embeddings)
+```
+
+However, embeddings we find for classification tasks are not always so clean and 
+intuitive. We can get the word embeddings from our classification model with:
+
+```{r}
+wts <- get_weights(model)  # returns a list with each layers weights
+embedding_wts <- wts[[1]]  # get the first layer's weights
+```
+
+The following just does some bookkeeping to extract the applicable words and 
+assign them as row names to the embedding matrix.
+
+```{r}
+words <- tokenizer$word_index %>% 
+  as_tibble() %>% 
+  pivot_longer(everything(), names_to = "word", values_to = "id") %>%
+  filter(id <= tokenizer$num_words) %>%
+  arrange(id)
+
+row.names(embedding_wts) <- words$word
+```
+
+The following is one of the custom functions you imported from the 
+[helper_functions.R](https://github.com/misk-data-science/misk-dl/blob/master/materials/06-word-embeddings/helper_functions.R) file. You can see the word 
+embeddings that most closely align to a given word are not as intuitive as those
+produced from the natural language model. However, these are the embeddings that
+optimized for the classification procedure at hand.
+
+```{r}
+similar_classification_words("horrible", embedding_wts)
+```
+ 
+Here's a handy sequence of code that uses the [t-SNE](https://bit.ly/2rDk6rs) 
+methodology to visualize nearest neighbor word embeddings.
+
+```{r, fig.width=10, fig.height=6}
+# plotting too many words makes the output hard to read
+n_words_to_plot <- 1000
+
+tsne <- Rtsne::Rtsne(
+  X = embedding_wts[1:n_words_to_plot,], 
+  perplexity = 100, 
+  pca = FALSE
+  )
+
+p <- tsne$Y %>%
+  as.data.frame() %>%
+  mutate(word = row.names(embedding_wts)[1:n_words_to_plot]) %>%
+  ggplot(aes(x = V1, y = V2, label = word)) + 
+  geom_text(size = 3)
+
+plotly::ggplotly(p)
+```
+ 
+# Key takeaways
+ 
+* Word embeddings
+   - Commonly used for language modeling and prediction tasks.
+   - Provide a dense, relationship rich vector representation of words.
+   - We can measure similarity with cosine similarity (other distance functions
+      are also used).
+   - See https://misk-data-science.github.io/misk-dl/03-word-embeddings.html#12 for list of resources to go deeping into word
+     embeddings.
+
+* Data prep
+   - Use `text_tokenizer()` to define the text preprocessing we desire (defaults
+     are good).
+   - Use `fit_text_tokenizer()` to preprocess text (i.e. remove punctuation,
+     standardize to lowercase).
+   - Use `texts_to_sequences()` to convert standardized text to numeric
+     representation of word index.
+   - Use `pad_sequences()` to make all text sequences the same length. This
+     length can be adjusted to improve performance.
+
+* Model training
+   - Fit word embeddings with `layer_embedding()`.
+   - Tune `output_dim`ension of the embeddings.
+   - Apply `layer_flatten()` to convert embeddings to a 2D tensor and use
+     `layer_dense()` for classification (there are alternatives which we will
+     cover later).
+
+[🏠](https://github.com/rstudio-conf-2020/dl-keras-tf)
